@@ -1,0 +1,372 @@
+import { useState, useMemo } from "react";
+
+const INITIAL_PARTS = [
+  { id: "PART-A", name: "Ceramic Ring",  tiers: [{from:1,to:20,price:100},{from:21,to:40,price:150},{from:41,to:99999,price:180}] },
+  { id: "PART-B", name: "Focus Ring",    tiers: [{from:1,to:15,price:200},{from:16,to:99999,price:250}] },
+  { id: "PART-C", name: "Edge Ring",     tiers: [{from:1,to:10,price:320},{from:11,to:30,price:380},{from:31,to:99999,price:420}] },
+];
+
+const INITIAL_HISTORY = [
+  { id:1, date:"2025-01-05", partId:"PART-A", qty:5,  manager:"김구매", note:"1차 교체" },
+  { id:2, date:"2025-02-10", partId:"PART-A", qty:8,  manager:"김구매", note:"2차 교체" },
+  { id:3, date:"2025-03-15", partId:"PART-A", qty:10, manager:"이구매", note:"3차 교체" },
+  { id:4, date:"2025-04-20", partId:"PART-B", qty:7,  manager:"김구매", note:"1차 교체" },
+  { id:5, date:"2025-05-10", partId:"PART-B", qty:10, manager:"이구매", note:"2차 교체" },
+  { id:6, date:"2025-06-01", partId:"PART-C", qty:6,  manager:"박구매", note:"1차 교체" },
+];
+
+function getPriceForQty(tiers, qty) {
+  const tier = tiers.find(t => qty >= t.from && qty <= t.to);
+  return tier ? tier.price : null;
+}
+
+function calcBillingForEntry(history, parts, entryId) {
+  const entry = history.find(h => h.id === entryId);
+  if (!entry) return { cumQty: 0, price: null, amount: 0 };
+  const part = parts.find(p => p.id === entry.partId);
+  if (!part) return { cumQty: 0, price: null, amount: 0 };
+  const prevEntries = history.filter(h => h.partId === entry.partId && h.id <= entryId);
+  const cumQty = prevEntries.reduce((s, h) => s + h.qty, 0);
+  const price = getPriceForQty(part.tiers, cumQty);
+  return { cumQty, price, amount: price ? entry.qty * price : 0 };
+}
+
+function getNextTierInfo(tiers, cumQty) {
+  const curTier = tiers.find(t => cumQty >= t.from && cumQty <= t.to);
+  if (!curTier || curTier.to === 99999) return null;
+  return { remaining: curTier.to - cumQty, nextPrice: tiers.find(t => t.from === curTier.to + 1)?.price };
+}
+
+export default function App() {
+  const [tab, setTab] = useState("dashboard");
+  const [parts, setParts] = useState(INITIAL_PARTS);
+  const [history, setHistory] = useState(INITIAL_HISTORY);
+  const [form, setForm] = useState({ date: new Date().toISOString().slice(0,10), partId: "PART-A", qty: "", manager: "", note: "" });
+  const [newPart, setNewPart] = useState({ id:"", name:"", tiers:[{from:1,to:"",price:""}] });
+  const [showAddPart, setShowAddPart] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  function showToast(msg, type="success") {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 2800);
+  }
+
+  const summary = useMemo(() => {
+    return parts.map(part => {
+      const partHistory = history.filter(h => h.partId === part.id);
+      const cumQty = partHistory.reduce((s, h) => s + h.qty, 0);
+      const totalAmount = partHistory.reduce((s, h) => {
+        const { amount } = calcBillingForEntry(history, parts, h.id);
+        return s + amount;
+      }, 0);
+      const currentPrice = getPriceForQty(part.tiers, cumQty);
+      const nextTier = getNextTierInfo(part.tiers, cumQty);
+      return { ...part, cumQty, totalAmount, currentPrice, nextTier };
+    });
+  }, [parts, history]);
+
+  function handleAddHistory(e) {
+    e.preventDefault();
+    if (!form.qty || isNaN(form.qty) || +form.qty <= 0) { showToast("수량을 올바르게 입력하세요.", "error"); return; }
+    const newId = Math.max(...history.map(h => h.id), 0) + 1;
+    setHistory(prev => [...prev, { id: newId, ...form, qty: +form.qty }]);
+    setForm(f => ({ ...f, qty: "", note: "" }));
+    showToast("교체 이력이 추가되었습니다.");
+  }
+
+  function handleAddPart(e) {
+    e.preventDefault();
+    if (!newPart.id || !newPart.name || newPart.tiers.some(t => !t.to || !t.price)) {
+      showToast("파트 정보를 모두 입력하세요.", "error"); return;
+    }
+    const formatted = { ...newPart, tiers: newPart.tiers.map((t,i) => ({ from: i===0?1:+newPart.tiers[i-1].to+1, to: +t.to, price: +t.price })) };
+    formatted.tiers[formatted.tiers.length-1].to = 99999;
+    setParts(prev => [...prev, formatted]);
+    setNewPart({ id:"", name:"", tiers:[{from:1,to:"",price:""}] });
+    setShowAddPart(false);
+    showToast(`${formatted.name} 파트가 추가되었습니다.`);
+  }
+
+  const enrichedHistory = useMemo(() => {
+    return history.map(h => {
+      const { cumQty, price, amount } = calcBillingForEntry(history, parts, h.id);
+      const part = parts.find(p => p.id === h.partId);
+      return { ...h, cumQty, price, amount, partName: part?.name || "-" };
+    });
+  }, [history, parts]);
+
+  const totalBilling = summary.reduce((s, p) => s + p.totalAmount, 0);
+
+  const tabs = [
+    { id:"dashboard", label:"📊 대시보드" },
+    { id:"history",   label:"📋 교체이력 (구매팀)" },
+    { id:"billing",   label:"💰 청구집계 (영업팀)" },
+    { id:"master",    label:"⚙️ 파트 마스터" },
+  ];
+
+  return (
+    <div style={{ fontFamily:"'Pretendard','Noto Sans KR',sans-serif", background:"#0f172a", minHeight:"100vh", color:"#e2e8f0" }}>
+      {toast && (
+        <div style={{ position:"fixed", top:20, right:24, zIndex:9999, background: toast.type==="error"?"#ef4444":"#22c55e",
+          color:"#fff", padding:"10px 20px", borderRadius:8, fontWeight:600, fontSize:14, boxShadow:"0 4px 20px #0005" }}>
+          {toast.msg}
+        </div>
+      )}
+      <div style={{ background:"linear-gradient(135deg,#1e3a5f,#0f172a)", borderBottom:"1px solid #1e3a5f", padding:"16px 32px", display:"flex", alignItems:"center", gap:16 }}>
+        <div style={{ width:40, height:40, background:"linear-gradient(135deg,#3b82f6,#06b6d4)", borderRadius:10, display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>⚙️</div>
+        <div>
+          <div style={{ fontWeight:800, fontSize:18, color:"#f1f5f9", letterSpacing:"-0.5px" }}>파트 교체 단가 관리 시스템</div>
+          <div style={{ fontSize:12, color:"#64748b", marginTop:2 }}>구매팀 수량 입력 → 영업팀 자동 견적 산출</div>
+        </div>
+        <div style={{ marginLeft:"auto", background:"#1e3a5f", border:"1px solid #2e5fa3", borderRadius:8, padding:"6px 14px", fontSize:13, color:"#93c5fd" }}>
+          총 청구 합계: <span style={{ fontWeight:800, color:"#fbbf24", fontSize:16 }}>${totalBilling.toLocaleString()}</span>
+        </div>
+      </div>
+      <div style={{ display:"flex", borderBottom:"1px solid #1e3a5f", background:"#0f172a", paddingLeft:32 }}>
+        {tabs.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)} style={{
+            padding:"14px 20px", background:"none", border:"none", cursor:"pointer", fontSize:13, fontWeight:600,
+            color: tab===t.id ? "#60a5fa" : "#64748b",
+            borderBottom: tab===t.id ? "2px solid #3b82f6" : "2px solid transparent",
+            transition:"all 0.15s"
+          }}>{t.label}</button>
+        ))}
+      </div>
+      <div style={{ padding:"28px 32px" }}>
+        {tab==="dashboard" && (
+          <div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:16, marginBottom:24 }}>
+              {summary.map(p => (
+                <div key={p.id} style={{ background:"#1e293b", border:"1px solid #1e3a5f", borderRadius:12, padding:20 }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:12 }}>
+                    <div>
+                      <div style={{ fontSize:12, color:"#64748b", marginBottom:4 }}>{p.id}</div>
+                      <div style={{ fontWeight:700, fontSize:16, color:"#f1f5f9" }}>{p.name}</div>
+                    </div>
+                    <div style={{ background:"#0f172a", borderRadius:8, padding:"4px 10px", fontSize:12, color:"#60a5fa", fontWeight:700 }}>
+                      누적 {p.cumQty.toLocaleString()}개
+                    </div>
+                  </div>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
+                    <span style={{ fontSize:13, color:"#94a3b8" }}>현재 단가</span>
+                    <span style={{ fontWeight:700, color:"#34d399" }}>${p.currentPrice?.toLocaleString() ?? "-"}</span>
+                  </div>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:12 }}>
+                    <span style={{ fontSize:13, color:"#94a3b8" }}>총 청구액</span>
+                    <span style={{ fontWeight:800, color:"#fbbf24", fontSize:15 }}>${p.totalAmount.toLocaleString()}</span>
+                  </div>
+                  {p.nextTier && (
+                    <div>
+                      <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, color:"#f87171", marginBottom:4 }}>
+                        <span>⚠️ 다음 구간까지 {p.nextTier.remaining}개 남음</span>
+                        <span>→ ${p.nextTier.nextPrice}</span>
+                      </div>
+                      {(() => {
+                        const tier = p.tiers.find(t => p.cumQty >= t.from && p.cumQty <= t.to);
+                        if (!tier) return null;
+                        const pct = Math.min(100, ((p.cumQty - tier.from + 1) / (tier.to - tier.from + 1)) * 100);
+                        return (
+                          <div style={{ background:"#0f172a", borderRadius:4, height:6, overflow:"hidden" }}>
+                            <div style={{ width:`${pct}%`, height:"100%", background: pct>80?"#ef4444":pct>50?"#f59e0b":"#3b82f6", transition:"width 0.4s" }} />
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+                  {!p.nextTier && <div style={{ fontSize:11, color:"#22c55e" }}>✅ 최종 구간 적용 중</div>}
+                </div>
+              ))}
+            </div>
+            {summary.filter(p => p.nextTier && p.nextTier.remaining <= 5).length > 0 && (
+              <div style={{ background:"#7f1d1d", border:"1px solid #ef4444", borderRadius:10, padding:"14px 20px" }}>
+                <div style={{ fontWeight:700, color:"#fca5a5", marginBottom:8, fontSize:14 }}>🚨 구간 초과 임박 파트</div>
+                {summary.filter(p => p.nextTier && p.nextTier.remaining <= 5).map(p => (
+                  <div key={p.id} style={{ fontSize:13, color:"#fecaca" }}>
+                    {p.name} ({p.id}): {p.nextTier.remaining}개 후 단가 변경 (${p.currentPrice} → ${p.nextTier.nextPrice})
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {tab==="history" && (
+          <div>
+            <form onSubmit={handleAddHistory} style={{ background:"#1e293b", border:"1px solid #1e3a5f", borderRadius:12, padding:20, marginBottom:24 }}>
+              <div style={{ fontWeight:700, fontSize:15, color:"#93c5fd", marginBottom:16 }}>+ 교체 이력 추가 (구매팀)</div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr 1fr", gap:12, marginBottom:12 }}>
+                {[
+                  {label:"교체일자", key:"date", type:"date"},
+                  {label:"파트", key:"partId", type:"select"},
+                  {label:"교체수량", key:"qty", type:"number", placeholder:"수량 입력"},
+                  {label:"담당자", key:"manager", type:"text", placeholder:"이름"},
+                  {label:"비고", key:"note", type:"text", placeholder:"선택"},
+                ].map(f => (
+                  <div key={f.key}>
+                    <div style={{ fontSize:11, color:"#64748b", marginBottom:4 }}>{f.label}</div>
+                    {f.type==="select" ? (
+                      <select value={form.partId} onChange={e=>setForm(v=>({...v,partId:e.target.value}))}
+                        style={{ width:"100%", background:"#0f172a", border:"1px solid #334155", borderRadius:6, padding:"8px 10px", color:"#e2e8f0", fontSize:13 }}>
+                        {parts.map(p => <option key={p.id} value={p.id}>{p.id} — {p.name}</option>)}
+                      </select>
+                    ) : (
+                      <input type={f.type} value={form[f.key]} onChange={e=>setForm(v=>({...v,[f.key]:e.target.value}))}
+                        placeholder={f.placeholder}
+                        style={{ width:"100%", background:"#0f172a", border:"1px solid #334155", borderRadius:6, padding:"8px 10px", color:"#e2e8f0", fontSize:13, boxSizing:"border-box" }} />
+                    )}
+                  </div>
+                ))}
+              </div>
+              <button type="submit" style={{ background:"linear-gradient(135deg,#3b82f6,#1d4ed8)", color:"#fff", border:"none", borderRadius:8, padding:"10px 24px", fontWeight:700, cursor:"pointer", fontSize:14 }}>
+                이력 추가
+              </button>
+            </form>
+            <div style={{ background:"#1e293b", border:"1px solid #1e3a5f", borderRadius:12, overflow:"hidden" }}>
+              <table style={{ width:"100%", borderCollapse:"collapse" }}>
+                <thead>
+                  <tr style={{ background:"#1e3a5f" }}>
+                    {["교체일자","파트번호","파트명","교체수량","누적수량","적용단가","청구금액","담당자","비고"].map(h => (
+                      <th key={h} style={{ padding:"12px 14px", fontSize:12, color:"#93c5fd", fontWeight:700, textAlign:"center", borderBottom:"1px solid #1e3a5f" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {enrichedHistory.map((h, i) => (
+                    <tr key={h.id} style={{ background: i%2===0?"#1e293b":"#172033" }}>
+                      <td style={{ padding:"10px 14px", fontSize:13, textAlign:"center", color:"#94a3b8" }}>{h.date}</td>
+                      <td style={{ padding:"10px 14px", fontSize:13, textAlign:"center", color:"#60a5fa", fontWeight:700 }}>{h.partId}</td>
+                      <td style={{ padding:"10px 14px", fontSize:13, color:"#e2e8f0" }}>{h.partName}</td>
+                      <td style={{ padding:"10px 14px", fontSize:13, textAlign:"center", color:"#fbbf24", fontWeight:700 }}>{h.qty.toLocaleString()}</td>
+                      <td style={{ padding:"10px 14px", fontSize:13, textAlign:"center", color:"#34d399", fontWeight:700 }}>{h.cumQty.toLocaleString()}</td>
+                      <td style={{ padding:"10px 14px", fontSize:13, textAlign:"center", color:h.price?"#e2e8f0":"#ef4444" }}>{h.price ? `$${h.price.toLocaleString()}` : "없음"}</td>
+                      <td style={{ padding:"10px 14px", fontSize:13, textAlign:"center", color:"#fbbf24", fontWeight:700 }}>${h.amount.toLocaleString()}</td>
+                      <td style={{ padding:"10px 14px", fontSize:12, textAlign:"center", color:"#94a3b8" }}>{h.manager}</td>
+                      <td style={{ padding:"10px 14px", fontSize:12, color:"#64748b" }}>{h.note}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+        {tab==="billing" && (
+          <div>
+            <div style={{ background:"#1e293b", border:"1px solid #1e3a5f", borderRadius:12, overflow:"hidden", marginBottom:20 }}>
+              <div style={{ background:"#1e3a5f", padding:"14px 20px", fontWeight:700, color:"#93c5fd", fontSize:15 }}>파트별 청구 집계 (영업팀)</div>
+              <table style={{ width:"100%", borderCollapse:"collapse" }}>
+                <thead>
+                  <tr style={{ background:"#172033" }}>
+                    {["파트번호","파트명","총 교체수량","현재 적용단가","총 청구금액","다음 구간까지","구간 단가 정보"].map(h => (
+                      <th key={h} style={{ padding:"12px 14px", fontSize:12, color:"#93c5fd", fontWeight:700, textAlign:"center" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {summary.map((p, i) => (
+                    <tr key={p.id} style={{ background: i%2===0?"#1e293b":"#172033" }}>
+                      <td style={{ padding:"14px", textAlign:"center", color:"#60a5fa", fontWeight:700 }}>{p.id}</td>
+                      <td style={{ padding:"14px", color:"#e2e8f0" }}>{p.name}</td>
+                      <td style={{ padding:"14px", textAlign:"center", color:"#fbbf24", fontWeight:700, fontSize:16 }}>{p.cumQty.toLocaleString()}</td>
+                      <td style={{ padding:"14px", textAlign:"center", color:"#34d399", fontWeight:700 }}>${p.currentPrice?.toLocaleString() ?? "-"}</td>
+                      <td style={{ padding:"14px", textAlign:"center", color:"#fbbf24", fontWeight:800, fontSize:16 }}>${p.totalAmount.toLocaleString()}</td>
+                      <td style={{ padding:"14px", textAlign:"center" }}>
+                        {p.nextTier
+                          ? <span style={{ color: p.nextTier.remaining<=5?"#ef4444":"#f59e0b", fontWeight:700 }}>{p.nextTier.remaining}개 → ${p.nextTier.nextPrice}</span>
+                          : <span style={{ color:"#22c55e", fontSize:12 }}>최종 구간</span>}
+                      </td>
+                      <td style={{ padding:"14px" }}>
+                        <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                          {p.tiers.map((t, ti) => (
+                            <span key={ti} style={{
+                              background: p.cumQty >= t.from && p.cumQty <= t.to ? "#1d4ed8" : "#0f172a",
+                              border: `1px solid ${p.cumQty >= t.from && p.cumQty <= t.to ? "#3b82f6" : "#334155"}`,
+                              borderRadius:6, padding:"2px 8px", fontSize:11, color: p.cumQty >= t.from && p.cumQty <= t.to ? "#93c5fd" : "#64748b"
+                            }}>
+                              {t.from}~{t.to===99999?"∞":t.to}: ${t.price}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr style={{ background:"#0f172a", borderTop:"2px solid #1e3a5f" }}>
+                    <td colSpan={4} style={{ padding:"14px 20px", fontWeight:800, color:"#93c5fd", fontSize:15 }}>합 계</td>
+                    <td style={{ padding:"14px", textAlign:"center", fontWeight:800, color:"#fbbf24", fontSize:18 }}>${totalBilling.toLocaleString()}</td>
+                    <td colSpan={2} />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+        )}
+        {tab==="master" && (
+          <div>
+            {parts.map(p => (
+              <div key={p.id} style={{ background:"#1e293b", border:"1px solid #1e3a5f", borderRadius:12, padding:20, marginBottom:16 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+                  <div>
+                    <span style={{ color:"#60a5fa", fontWeight:800, fontSize:15 }}>{p.id}</span>
+                    <span style={{ color:"#94a3b8", marginLeft:10, fontSize:14 }}>{p.name}</span>
+                  </div>
+                </div>
+                <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+                  {p.tiers.map((t, i) => (
+                    <div key={i} style={{ background:"#0f172a", border:"1px solid #334155", borderRadius:8, padding:"10px 16px", minWidth:140 }}>
+                      <div style={{ fontSize:11, color:"#64748b", marginBottom:4 }}>구간 {i+1}</div>
+                      <div style={{ fontSize:13, color:"#e2e8f0" }}>{t.from} ~ {t.to===99999?"∞":t.to} 개</div>
+                      <div style={{ fontWeight:800, color:"#34d399", fontSize:16, marginTop:4 }}>${t.price.toLocaleString()}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+            {!showAddPart ? (
+              <button onClick={() => setShowAddPart(true)} style={{ background:"linear-gradient(135deg,#1d4ed8,#1e3a5f)", color:"#93c5fd", border:"1px solid #3b82f6", borderRadius:10, padding:"12px 24px", cursor:"pointer", fontWeight:700, fontSize:14 }}>
+                + 새 파트 추가
+              </button>
+            ) : (
+              <form onSubmit={handleAddPart} style={{ background:"#1e293b", border:"1px solid #3b82f6", borderRadius:12, padding:20 }}>
+                <div style={{ fontWeight:700, color:"#93c5fd", marginBottom:16 }}>새 파트 등록</div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:16 }}>
+                  {[{label:"파트번호",key:"id",placeholder:"예: PART-D"},{label:"파트명",key:"name",placeholder:"예: Shield Ring"}].map(f => (
+                    <div key={f.key}>
+                      <div style={{ fontSize:11, color:"#64748b", marginBottom:4 }}>{f.label}</div>
+                      <input value={newPart[f.key]} onChange={e=>setNewPart(v=>({...v,[f.key]:e.target.value}))}
+                        placeholder={f.placeholder}
+                        style={{ width:"100%", background:"#0f172a", border:"1px solid #334155", borderRadius:6, padding:"8px 10px", color:"#e2e8f0", fontSize:13, boxSizing:"border-box" }} />
+                    </div>
+                  ))}
+                </div>
+                <div style={{ marginBottom:12 }}>
+                  <div style={{ fontSize:12, color:"#64748b", marginBottom:8 }}>단가 구간 (마지막 구간은 자동으로 ∞ 처리)</div>
+                  {newPart.tiers.map((t, i) => (
+                    <div key={i} style={{ display:"flex", gap:10, marginBottom:8, alignItems:"center" }}>
+                      <span style={{ color:"#64748b", fontSize:12, width:60 }}>구간 {i+1}</span>
+                      <input placeholder="구간 끝" value={t.to} onChange={e=>{const ts=[...newPart.tiers];ts[i]={...ts[i],to:e.target.value};setNewPart(v=>({...v,tiers:ts}))}}
+                        style={{ width:100, background:"#0f172a", border:"1px solid #334155", borderRadius:6, padding:"6px 10px", color:"#e2e8f0", fontSize:13 }} />
+                      <span style={{ color:"#64748b", fontSize:12 }}>개까지</span>
+                      <input placeholder="단가 ($)" value={t.price} onChange={e=>{const ts=[...newPart.tiers];ts[i]={...ts[i],price:e.target.value};setNewPart(v=>({...v,tiers:ts}))}}
+                        style={{ width:100, background:"#0f172a", border:"1px solid #334155", borderRadius:6, padding:"6px 10px", color:"#e2e8f0", fontSize:13 }} />
+                    </div>
+                  ))}
+                  <button type="button" onClick={()=>setNewPart(v=>({...v,tiers:[...v.tiers,{from:"",to:"",price:""}]}))}
+                    style={{ background:"none", border:"1px dashed #334155", color:"#64748b", borderRadius:6, padding:"6px 14px", cursor:"pointer", fontSize:12 }}>
+                    + 구간 추가
+                  </button>
+                </div>
+                <div style={{ display:"flex", gap:10 }}>
+                  <button type="submit" style={{ background:"#1d4ed8", color:"#fff", border:"none", borderRadius:8, padding:"10px 22px", fontWeight:700, cursor:"pointer" }}>등록</button>
+                  <button type="button" onClick={()=>setShowAddPart(false)} style={{ background:"none", color:"#64748b", border:"1px solid #334155", borderRadius:8, padding:"10px 22px", cursor:"pointer" }}>취소</button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
+      </div>
+      <div style={{ textAlign:"center", padding:"16px", fontSize:11, color:"#334155" }}>
+        ※ 본 시스템은 참고용입니다. 법적·계약적 효력이 있는 문서 발행 전 담당자 검토 필요
+      </div>
+    </div>
+  );
+}
